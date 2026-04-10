@@ -19,7 +19,10 @@ export default function Leaderboard({ entries, currentRound }: LeaderboardProps)
       <div className="flex items-center px-4 py-2 text-xs text-gray-500 uppercase tracking-wide border-b border-gray-200 bg-gray-50 sticky top-0 z-10">
         <span className="w-12 text-center font-medium">#</span>
         <span className="flex-1 font-medium">Entry</span>
-        <span className="w-16 text-center font-medium">Score</span>
+        {currentRound >= 2 && entries[0]?.dailyScores.map((_, i) => (
+          <span key={i} className="w-10 text-center font-medium hidden sm:block">R{i + 1}</span>
+        ))}
+        <span className="w-16 text-center font-medium">Total</span>
       </div>
 
       {entries.map((entry, idx) => {
@@ -57,7 +60,14 @@ export default function Leaderboard({ entries, currentRound }: LeaderboardProps)
                 )}
               </span>
 
-              {/* Score */}
+              {/* Per-round scores (desktop, multi-round only) */}
+              {currentRound >= 2 && entry.dailyScores.map((d, i) => (
+                <span key={i} className="w-10 text-center font-mono text-xs text-gray-500 hidden sm:block">
+                  {d.score}
+                </span>
+              ))}
+
+              {/* Total */}
               <span className="w-16 text-center font-mono font-bold text-charcoal">
                 {entry.totalScore}
               </span>
@@ -69,7 +79,7 @@ export default function Leaderboard({ entries, currentRound }: LeaderboardProps)
             </button>
 
             {isExpanded && (
-              <EntryDetail golfers={entry.golfers} isAfterCut={isAfterCut} />
+              <EntryDetail golfers={entry.golfers} currentRound={currentRound} />
             )}
           </div>
         );

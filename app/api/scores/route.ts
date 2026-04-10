@@ -15,7 +15,6 @@ export async function GET() {
       leaderboard.currentRound,
       leaderboard.roundComplete,
       leaderboard.tournamentName,
-      leaderboard.cutLine,
     );
 
     if (results.unmatchedPicks.length > 0) {

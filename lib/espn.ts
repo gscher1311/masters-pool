@@ -1,29 +1,28 @@
 const ESPN_URL = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard";
 
-export interface GolferScore {
+export interface GolferData {
   name: string;
-  position: number;       // computed ordinal (ties get same number)
-  positionDisplay: string; // "T5", "1", etc.
-  totalScore: string;     // "-5", "+2", "E"
-  roundScores: { round: number; strokes: number; display: string }[];
-  status: "active" | "cut" | "wd" | "dq";
+  normalizedName: string;
+  roundStrokes: (number | null)[]; // [67, 72, null, null] — strokes per round
+  totalScore: string;              // display: "-5", "+2", "E"
+  currentOrder: number;            // ESPN live sort order
   eagles: number;
-  thru: string;           // "F", "12", etc. (for in-progress rounds)
+  thru: string;                    // "F" or "12" for in-progress
+  isCut: boolean;
+  isWD: boolean;
 }
 
 export interface LeaderboardData {
-  golfers: Map<string, GolferScore>;
+  golfers: GolferData[];
   currentRound: number;
   roundComplete: boolean;
   tournamentName: string;
   lastUpdated: string;
-  cutLine: number;
-  totalGolfers: number;
 }
 
 /**
  * Normalize golfer names for matching.
- * Handles: ø→o, å→a, é→e, á→a, í→i, ú→u, then NFD + strip accents
+ * Handles: ø->o, å->a, etc., then NFD + strip combining accents
  */
 export function normalizeName(name: string): string {
   return name
@@ -78,85 +77,69 @@ export async function fetchLeaderboard(): Promise<LeaderboardData> {
   const roundComplete = competition.status?.type?.name === "STATUS_PLAY_COMPLETE" ||
     competition.status?.type?.state === "post";
 
-  // Sort by order
-  const sorted = [...competitors].sort((a, b) => a.order - b.order);
-
-  // Count how many per score for tie detection
-  const scoreCount = new Map<string, number>();
-  for (const c of sorted) {
-    scoreCount.set(c.score, (scoreCount.get(c.score) || 0) + 1);
-  }
-
-  // Compute ordinal positions with ties
-  const golfers = new Map<string, GolferScore>();
-  let prevScore = "";
-  let position = 0;
-
-  for (let i = 0; i < sorted.length; i++) {
-    const c = sorted[i];
-    if (c.score !== prevScore) {
-      position = i + 1;
-      prevScore = c.score;
-    }
-
-    const isTied = (scoreCount.get(c.score) || 0) > 1;
-    const posDisplay = isTied ? `T${position}` : `${position}`;
-
-    // Parse round scores
-    const roundScores: GolferScore["roundScores"] = [];
+  const golfers: GolferData[] = competitors.map((c) => {
+    const roundStrokes: (number | null)[] = [null, null, null, null];
     let totalEagles = 0;
     let thru = "F";
+    let hasInProgressRound = false;
 
     if (c.linescores) {
       for (const ls of c.linescores) {
+        const roundIdx = ls.period - 1;
+        if (roundIdx < 0 || roundIdx > 3) continue;
+
         if (ls.value != null) {
-          roundScores.push({
-            round: ls.period,
-            strokes: ls.value,
-            display: ls.displayValue || String(ls.value),
-          });
+          // Completed round
+          roundStrokes[roundIdx] = ls.value;
+        } else if (ls.linescores && ls.linescores.length > 0) {
+          // In-progress round — count completed holes
+          hasInProgressRound = true;
+          const completedHoles = ls.linescores.length;
+          thru = completedHoles >= 18 ? "F" : String(completedHoles);
 
-          // Count eagles from hole-by-hole
-          if (ls.linescores) {
-            for (const hole of ls.linescores) {
-              const st = hole.scoreType?.displayValue;
-              if (st === "-2" || st === "-3") totalEagles++;
-            }
+          // Compute partial strokes from hole-by-hole
+          let partialStrokes = 0;
+          for (const hole of ls.linescores) {
+            // hole scores are in .value but let's parse from the structure
+            // Actually the value is on the hole object directly
+            const holeVal = (hole as unknown as { value?: number }).value;
+            if (holeVal != null) partialStrokes += holeVal;
           }
-        } else {
-          // In-progress round: count completed holes for "thru"
-          if (ls.linescores && ls.linescores.length > 0) {
-            const completedHoles = ls.linescores.length;
-            thru = completedHoles >= 18 ? "F" : String(completedHoles);
+          if (partialStrokes > 0) roundStrokes[roundIdx] = partialStrokes;
+        }
 
-            // Still count eagles for in-progress rounds
-            for (const hole of ls.linescores) {
-              const st = hole.scoreType?.displayValue;
-              if (st === "-2" || st === "-3") totalEagles++;
-            }
+        // Count eagles from hole-by-hole data (both completed and in-progress rounds)
+        if (ls.linescores) {
+          for (const hole of ls.linescores) {
+            const st = hole.scoreType?.displayValue;
+            if (st === "-2" || st === "-3") totalEagles++;
           }
         }
       }
     }
 
-    // If all rounds have values, thru = F
-    if (roundScores.length === currentRound) thru = "F";
+    if (!hasInProgressRound) thru = "F";
+
+    // Detect cut/WD: a golfer is cut if they have completed rounds < currentRound
+    // and the current round is >= 3 (cut happens after R2)
+    // More precisely: if R3+ is active and this golfer has no R3 data
+    const completedRounds = roundStrokes.filter((s) => s !== null).length;
+    const isCut = currentRound >= 3 && completedRounds < currentRound && !hasInProgressRound;
 
     const normalized = normalizeName(c.athlete.fullName);
-    golfers.set(normalized, {
+
+    return {
       name: c.athlete.fullName,
-      position,
-      positionDisplay: posDisplay,
+      normalizedName: normalized,
+      roundStrokes,
       totalScore: c.score,
-      roundScores,
-      status: "active", // Will be updated when cut info available
+      currentOrder: c.order,
       eagles: totalEagles,
       thru,
-    });
-  }
-
-  // Cut line: for now, total golfers + 1 (updated after Round 2 when cuts happen)
-  const cutLine = sorted.length + 1;
+      isCut,
+      isWD: false, // ESPN doesn't clearly flag this; treat like cut
+    };
+  });
 
   return {
     golfers,
@@ -164,7 +147,5 @@ export async function fetchLeaderboard(): Promise<LeaderboardData> {
     roundComplete,
     tournamentName: event.name || "Masters Tournament",
     lastUpdated: new Date().toISOString(),
-    cutLine,
-    totalGolfers: sorted.length,
   };
 }
