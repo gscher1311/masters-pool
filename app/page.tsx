@@ -17,7 +17,7 @@ export default function Home() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/scores");
+      const res = await fetch(`/api/scores?t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) throw new Error("Failed to fetch");
       const json = await res.json();
       setData(json);
